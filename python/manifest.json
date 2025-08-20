@@ -1,0 +1,18 @@
+{
+  "manifestVersion": 1,
+  "executable": "./g-assist-plugin-python.exe",
+  "persistent": true,
+  "functions": [
+    {
+      "name": "get_character_info",
+      "description": "Provides lore, stats, and abilities for a Marvel Rivals hero. Use when the user asks about a specific character like Spider-Man or Iron Man.",
+      "tags": ["marvel", "rivals", "character", "hero", "info", "stats", "abilities", "lore"],
+      "properties": {
+        "character_name": {
+          "type": "string",
+          "description": "The name of the Marvel Rivals character (e.g. Spider-Man, Iron Man)"
+        }
+      }
+    }
+  ]
+}
