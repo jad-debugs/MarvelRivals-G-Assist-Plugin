@@ -1,37 +1,41 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-''' RISE plugin template code.
-
-The following code can be used to create a RISE plugin written in Python. RISE
-plugins are Windows based executables. They are spawned by the RISE plugin
-manager. Communication between the plugin and the manager are done via pipes.
-'''
-import requests
 import json
 import logging
 import os
+import sys
+import zipfile
+import requests
+from typing import Dict, Optional, Any, Tuple
+import time
+import tempfile
+from requests import Response
+from urllib.parse import urlencode
+import shutil
+import subprocess
+import webbrowser
+from pathlib import Path
+import ctypes
 from ctypes import byref, windll, wintypes
-from typing import Optional
-
 
 # Data Types
-type Response = dict[bool,Optional[str]]
+Response = Dict[bool, Optional[str]]
 
-LOG_FILE = os.path.join(os.environ.get("USERPROFILE", "."), 'python_plugin.log')
+CONFIG_FILE = os.path.join(
+    os.environ.get("PROGRAMDATA", "."),
+    "NVIDIA Corporation",
+    "nvtopps",
+    "rise",
+    "plugins",
+    "mrivals",
+    "config.json"
+)
+
+LOG_FILE = os.path.join(os.environ.get("USERPROFILE", "."), 'mrivals_plugin.log')
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Mod.io API Constants
+MRIVALS_API_KEY = None
+
 
 def main():
     ''' Main entry point.
@@ -47,10 +51,9 @@ def main():
     CONTEXT_PROPERTY = 'messages'
     SYSTEM_INFO_PROPERTY = 'system_info'  # Added for game information
     FUNCTION_PROPERTY = 'func'
-    PARAMS_PROPERTY = 'properties'
+    PARAMS_PROPERTY = 'params'
     INITIALIZE_COMMAND = 'initialize'
     SHUTDOWN_COMMAND = 'shutdown'
-
 
     ERROR_MESSAGE = 'Plugin Error!'
 
@@ -58,11 +61,12 @@ def main():
     commands = {
         'initialize': execute_initialize_command,
         'shutdown': execute_shutdown_command,
-        'get_character_info': execute_get_character_info_command,
+        'mrivals_get_character_info': execute_get_character_info
+        
     }
     cmd = ''
 
-    logging.info('Plugin started')
+    logging.info('Marvel Rivals Plugin started')
     while cmd != SHUTDOWN_COMMAND:
         response = None
         input = read_command()
@@ -71,7 +75,7 @@ def main():
             continue
 
         logging.info(f'Received input: {input}')
-        
+
         if TOOL_CALLS_PROPERTY in input:
             tool_calls = input[TOOL_CALLS_PROPERTY]
             for tool_call in tool_calls:
@@ -79,15 +83,10 @@ def main():
                     cmd = tool_call[FUNCTION_PROPERTY]
                     logging.info(f'Processing command: {cmd}')
                     if cmd in commands:
-                        if(cmd == INITIALIZE_COMMAND or cmd == SHUTDOWN_COMMAND):
+                        if cmd in [INITIALIZE_COMMAND, SHUTDOWN_COMMAND]:
                             response = commands[cmd]()
                         else:
-                            response = execute_initialize_command()
-                            response = commands[cmd](
-                                input[PARAMS_PROPERTY] if PARAMS_PROPERTY in input else None,
-                                input[CONTEXT_PROPERTY] if CONTEXT_PROPERTY in input else None,
-                                input[SYSTEM_INFO_PROPERTY] if SYSTEM_INFO_PROPERTY in input else None  # Pass system_info directly
-                            )
+                            response = commands[cmd](tool_call[PARAMS_PROPERTY] if PARAMS_PROPERTY in tool_call else {})
                     else:
                         logging.warning(f'Unknown command: {cmd}')
                         response = generate_failure_response(f'{ERROR_MESSAGE} Unknown command: {cmd}')
@@ -104,17 +103,12 @@ def main():
         if cmd == SHUTDOWN_COMMAND:
             logging.info('Shutdown command received, terminating plugin')
             break
-    
-    logging.info('G-Assist Plugin stopped.')
+
+    logging.info('mod.io Plugin stopped.')
     return 0
 
 
-def read_command() -> dict | None:
-    ''' Reads a command from the communication pipe.
-
-    Returns:
-        Command details if the input was proper JSON; `None` otherwise
-    '''
+def read_command() -> dict or None:
     try:
         STD_INPUT_HANDLE = -10
         pipe = windll.kernel32.GetStdHandle(STD_INPUT_HANDLE)
@@ -124,36 +118,31 @@ def read_command() -> dict | None:
             BUFFER_SIZE = 4096
             message_bytes = wintypes.DWORD()
             buffer = bytes(BUFFER_SIZE)
-            success = windll.kernel32.ReadFile(
-                pipe,
-                buffer,
-                BUFFER_SIZE,
-                byref(message_bytes),
-                None
-            )
+            success = windll.kernel32.ReadFile(pipe, buffer, BUFFER_SIZE, byref(message_bytes), None)
 
             if not success:
                 logging.error('Error reading from command pipe')
                 return None
 
-            # Add the chunk we read
             chunk = buffer.decode('utf-8')[:message_bytes.value]
             chunks.append(chunk)
 
-            # If we read less than the buffer size, we're done
             if message_bytes.value < BUFFER_SIZE:
                 break
 
-        retval = buffer.decode('utf-8')[:message_bytes.value]
+        retval = ''.join(chunks)
         return json.loads(retval)
 
     except json.JSONDecodeError:
-        logging.error('Failed to decode JSON input')
+        try:
+            raw_input = ''.join(chunks) if chunks else 'No data'
+        except Exception as join_err:
+            raw_input = f'Could not join chunks (error: {join_err}). Chunks list: {repr(chunks)}'
+        logging.error(f'Failed to decode JSON input. Raw data: {repr(raw_input)}')
         return None
     except Exception as e:
         logging.error(f'Unexpected error in read_command: {str(e)}')
         return None
-
 
 def write_response(response:Response) -> None:
     ''' Writes a response to the communication pipe.
@@ -165,7 +154,7 @@ def write_response(response:Response) -> None:
         STD_OUTPUT_HANDLE = -11
         pipe = windll.kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
 
-        json_message = json.dumps(response)
+        json_message = json.dumps(response) + '<<END>>'
         message_bytes = json_message.encode('utf-8')
         message_len = len(message_bytes)
 
@@ -182,35 +171,64 @@ def write_response(response:Response) -> None:
         logging.error(f'Failed to write response: {str(e)}')
         pass
 
-
-def generate_failure_response(message:str=None) -> Response:
+def generate_failure_response(body:dict=None) -> dict:
     ''' Generates a response indicating failure.
 
-    Parameters:
-        message: String to be returned in the response (optional)
+    @param[in] data  information to be attached to the response
 
-    Returns:
-        A failure response with the attached message
+    @return dictionary response (to be converted to JSON when writing to the
+    communications pipe)
     '''
-    response = { 'success': False }
-    if message:
-        response['message'] = message
+    response = body.copy() if body is not None else dict()
+    response['success'] = False
     return response
 
-
-def generate_success_response(message:str=None) -> Response:
+def generate_success_response(body:dict=None) -> dict:
     ''' Generates a response indicating success.
 
-    Parameters:
-        message: String to be returned in the response (optional)
+    @param[in] data  information to be attached to the response
 
-    Returns:
-        A success response with the attached massage
+    @return dictionary response (to be converted to JSON when writing to the
+    communications pipe)
     '''
-    response = { 'success': True }
-    if message:
-        response['message'] = message
+    response = body.copy() if body is not None else dict()
+    response['success'] = True
     return response
+
+def summarize_character(data: Dict[str, Any], fallback_name: str) -> str:
+    """
+    Build a short, voice-friendly summary from the API schema you provided:
+      - name, real_name
+      - role, attack_type, difficulty
+      - team[]
+      - bio/lore
+      - first ability (if present)
+    """
+    name        = data.get("name") or fallback_name.title()
+    real_name   = data.get("real_name")
+    role        = data.get("role") or "Unknown role"
+    attack_type = data.get("attack_type") or "unknown attack type"
+    difficulty  = data.get("difficulty") or "unknown difficulty"
+    team_list   = data.get("team") or []
+    team        = ", ".join(team_list) if team_list else "no listed team"
+    bio         = data.get("bio") or data.get("lore") or ""
+
+    # Abilities
+    ability_line = "No abilities listed."
+    abilities = data.get("abilities") or []
+    if isinstance(abilities, list) and abilities:
+        a0 = abilities[0] if isinstance(abilities[0], dict) else {}
+        abil_name = a0.get("name", "Unnamed ability")
+        abil_desc = a0.get("description", "")
+        ability_line = f"Their signature ability is '{abil_name}': {abil_desc}"
+
+    parts = [
+        f"{name}" + (f", also known as {real_name}" if real_name else ""),
+        f"is a {role} hero using {attack_type} attacks on {team}, rated {difficulty} to play.",
+        bio,
+        ability_line
+    ]
+    return " ".join(p.strip() for p in parts if p and p.strip())
 
 
 def execute_initialize_command() -> dict:
@@ -228,7 +246,6 @@ def execute_initialize_command() -> dict:
     # initialization function body
     return generate_success_response('initialize success.')
 
-
 def execute_shutdown_command() -> dict:
     ''' Command handler for `shutdown` function
 
@@ -245,48 +262,64 @@ def execute_shutdown_command() -> dict:
     # shutdown function body
     return generate_success_response('shutdown success.')
 
+def execute_get_character_info(params: dict = None) -> dict:
+    # config
+    logging.info('fetching api key from config file')
+    if os.path.isfile(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as file:
+            config = json.load(file)
+            MRIVALS_API_KEY = config.get('api_key')
 
-def execute_get_character_info_command(params: dict = None, context: dict = None, system_info: dict = None) -> dict:
-    character = params.get("character_name") if params else None
-    logging.info(f"Fetching Marvel Rivals info for: {character}")
+    if not MRIVALS_API_KEY:
+        return generate_failure_response({ 'message': "Missing API key. Add 'api_key' to config.json next to the EXE." })
 
-    if not character:
-        return generate_failure_response("Missing character_name parameter.")
+    character_name = None
+
+    logging.info('getting character name from user query')
+    if ('character_name' in params and params['character_name'] is not None):
+        character_name = str(params['character_name'])
+    else:
+        character_name = 'ironman'
+    
 
     try:
-        url = f"https://marvelrivalsapi.com/api/v1/heroes/hero/{character.lower()}"
-        api_key = os.getenv("MARVEL_API_KEY")
+        logging.info(f'attempting api call with user-specified character name: {character_name}')
+        url = f"https://marvelrivalsapi.com/api/v1/heroes/hero/{character_name}"
+        headers = {"x-api-key": MRIVALS_API_KEY}
+        resp = requests.get(url, headers=headers)
 
-        if not api_key:
-            return generate_failure_response("Missing MARVEL_API_KEY environment variable.")
+        if resp.status_code == 401:
+            return generate_failure_response(
+                { 'message': f'mrivals1 fail' }
+            )
+        if resp.status_code == 404:
+            return generate_failure_response(
+                { 'message': f'mrivals2 fail' }
+            )
+        if resp.status_code == 429:
+            return generate_failure_response(
+                { 'message': f'mrivals3 fail' }
+            )
+        if resp.status_code >= 500:
+            return generate_failure_response(
+                { 'message': f'mod.io API5 request failed' }
+            )
+        if resp.status_code != 200:
+            return generate_failure_response(
+                { 'message': f'mod.io API2 request failed' }
+            )
 
-        headers = {
-            'x-api-key': api_key
-        }
+        data = resp.json()
+        summary = summarize_character(data, str(character_name))
+        return generate_success_response({'message': f'Summary: {summary}'})
 
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 404:
-            return generate_failure_response(f"No character named '{character}' found.")
-        elif response.status_code != 200:
-            return generate_failure_response(f"API error: {response.status_code}")
-
-        data = response.json()
-
-        # Summarize for G-Assist to speak
-        name = data.get("name", "Unknown")
-        role = data.get("role", "No role info")
-        bio = data.get("description", "No bio available")
-        ability = data.get("signatureAbility", {}).get("description", "No signature ability info.")
-
-        summary = f"{name} is a {role} in Marvel Rivals. {bio} Their signature ability is: {ability}"
-
-        return generate_success_response(summary)
-
+    except requests.Timeout:
+        return generate_failure_response({ 'message': f'API Request timed out.' })
     except Exception as e:
-        logging.error(f"Error during Marvel API call: {str(e)}")
-        return generate_failure_response("Error retrieving character info.")
+        logging.error(f"Error fetching character info: {e}")
+        return generate_failure_response({ 'message': f'Error retrieving character info: {e}' })
 
 
 if __name__ == '__main__':
+    logging.info("Starting mrivals plugin")
     main()
