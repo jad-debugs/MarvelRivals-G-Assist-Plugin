@@ -61,8 +61,8 @@ def main():
     commands = {
         'initialize': execute_initialize_command,
         'shutdown': execute_shutdown_command,
-        'mrivals_get_character_info': execute_get_character_info
-        
+        'mrivals_get_character_info': execute_get_character_info,
+        'mrivals_get_player_stats': execute_get_player_stats
     }
     cmd = ''
 
@@ -104,7 +104,7 @@ def main():
             logging.info('Shutdown command received, terminating plugin')
             break
 
-    logging.info('mod.io Plugin stopped.')
+    logging.info('mrivals Plugin stopped.')
     return 0
 
 
@@ -230,6 +230,32 @@ def summarize_character(data: Dict[str, Any], fallback_name: str) -> str:
     ]
     return " ".join(p.strip() for p in parts if p and p.strip())
 
+def summarize_player_stats(data: Dict[str, Any], fallback_name: str) -> str:
+    name = data.get("name")
+
+    # format data into just player overall stats
+    data = data.get("overall_stats")
+
+    matches     = data.get("total_matches") or fallback_name.title()
+    wins        = data.get("total_wins") or "unknown wins"
+
+    # format data into unranked gameplay
+    data = data.get("unranked")
+    
+    kills       = data.get("total_kills") or "unknown kills"
+    assists     = data.get("total_assists") or "Unknown assists"
+    deaths      = data.get("total_deaths") or "unknown deaths"
+    time        = data.get("total_time_played") or "unknown time"
+    mvp         = data.get("total_mvp") or "unknown mvp times"
+
+    parts = [
+        f"{name}" + (f", has played {str(matches)} toal matches."),
+        (f"Their win rate is {100*(int(wins)/int(matches))}% with an average of {int(kills)/int(matches)} kills per match, "),
+        (f"{int(deaths)/int(matches)} deaths per match, and {int(assists)/int(matches)} assists per match. "),
+        (f"{name} has been the match mvp {mvp} times. They have played Marvel Rivals for {time}.")
+    ]
+    return " ".join(p.strip() for p in parts if p and p.strip())
+
 
 def execute_initialize_command() -> dict:
     ''' Command handler for `initialize` function
@@ -311,6 +337,63 @@ def execute_get_character_info(params: dict = None) -> dict:
 
         data = resp.json()
         summary = summarize_character(data, str(character_name))
+        return generate_success_response({'message': f'Summary: {summary}'})
+
+    except requests.Timeout:
+        return generate_failure_response({ 'message': f'API Request timed out.' })
+    except Exception as e:
+        logging.error(f"Error fetching character info: {e}")
+        return generate_failure_response({ 'message': f'Error retrieving character info: {e}' })
+
+def execute_get_player_stats(params: dict = None) -> dict:
+    # config
+    logging.info('fetching api key from config file')
+    if os.path.isfile(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as file:
+            config = json.load(file)
+            MRIVALS_API_KEY = config.get('api_key')
+
+    if not MRIVALS_API_KEY:
+        return generate_failure_response({ 'message': "Missing API key. Add 'api_key' to config.json next to the EXE." })
+
+    player_name = None
+
+    logging.info('getting stats from user query')
+    if ('player_name' in params and params['player_name'] is not None):
+        player_name = str(params['player_name'])
+    else:
+        player_name = 'jaddo11'
+    
+
+    try:
+        logging.info(f'attempting api call with user-specified player name: {player_name}')
+        url = f"https://marvelrivalsapi.com/api/v1/player/{player_name}"
+        headers = {"x-api-key": MRIVALS_API_KEY}
+        resp = requests.get(url, headers=headers)
+
+        if resp.status_code == 401:
+            return generate_failure_response(
+                { 'message': f'mrivals1 fail' }
+            )
+        if resp.status_code == 404:
+            return generate_failure_response(
+                { 'message': f'mrivals2 fail' }
+            )
+        if resp.status_code == 429:
+            return generate_failure_response(
+                { 'message': f'mrivals3 fail' }
+            )
+        if resp.status_code >= 500:
+            return generate_failure_response(
+                { 'message': f'mrivals4 fails' }
+            )
+        if resp.status_code != 200:
+            return generate_failure_response(
+                { 'message': f'mrivals5 fails' }
+            )
+
+        data = resp.json()
+        summary = summarize_player_stats(data, str(player_name))
         return generate_success_response({'message': f'Summary: {summary}'})
 
     except requests.Timeout:

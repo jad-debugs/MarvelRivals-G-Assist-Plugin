@@ -2,15 +2,27 @@
   "manifestVersion": 1,
   "executable": "./g-assist-plugin-mrivals.exe",
   "persistent": true,
+  "description": "A Marvel Rivals plugin that gets info about heros and player data",
   "functions": [
     {
       "name": "mrivals_get_character_info",
       "description": "Provides lore, role, difficulty, team, attack type, and a signature ability for a Marvel Rivals hero. Use when the user asks about a specific hero (e.g., Spider-Man, Iron Man).",
-      "tags": ["marvel", "rivals", "hero","get", "character", "abilities", "stats", "lore", "info"],
+      "tags": ["marvel", "rivals", "hero", "get", "character", "abilities", "lore", "info"],
       "properties": {
         "character_name": {
           "type": "string",
           "description": "[required] character_name - The Hero's name, e.g., Spider-Man, Iron Man. Usually denoted by the word 'for' in a query. For example, in the query that asks 'Find me the character info for Iron Man', the character_name would be Iron Man."
+        }
+      }
+    },
+    {
+      "name": "mrivals_get_player_stats",
+      "description": "Gets a user/player number of matches, win percentage, kills, assists, mvps, deaths, and time played. Gets stats of a user",
+      "tags": ["marvel", "rivals","mvp","get", "stats", "assists", "kills", "deaths", "time", "matches", "wins", "losses", "user", "player", "statistics"],
+      "properties": {
+        "player_name": {
+          "type": "string",
+          "description": "[required] player_name - gamer tag of a user in marvel rivals, it would be his player id, username, or uid which is a string of numbers that is the player id"
         }
       }
     }
