@@ -131,6 +131,8 @@ def read_command() -> dict or None:
                 break
 
         retval = ''.join(chunks)
+        logging.info(f'Raw JSON string before parsing: {"".join(chunks)}')
+
         return json.loads(retval)
 
     except json.JSONDecodeError:
@@ -250,9 +252,9 @@ def summarize_player_stats(data: Dict[str, Any], fallback_name: str) -> str:
 
     parts = [
         f"{name}" + (f", has played {str(matches)} toal matches."),
-        (f"Their win rate is {100*(int(wins)/int(matches))}% with an average of {int(kills)/int(matches)} kills per match, "),
-        (f"{int(deaths)/int(matches)} deaths per match, and {int(assists)/int(matches)} assists per match. "),
-        (f"{name} has been the match mvp {mvp} times. They have played Marvel Rivals for {time}.")
+        (f"Their win rate is {100*(int(wins)/int(matches)):.1f}% with an average of {int(kills)/int(matches):.1f} kills per match, "),
+        (f"{int(deaths)/int(matches):.1f} deaths per match, and {int(assists)/int(matches):.1f} assists per match. "),
+        (f"{name} has been the match MVP {mvp} times. They have played Marvel Rivals for {time}.")
     ]
     return " ".join(p.strip() for p in parts if p and p.strip())
 
